@@ -3,7 +3,3 @@
 .env.*
 *.env
 !env.example
-# Local data directories that a stack may create next to its compose file
-**/data/
-**/letsencrypt/
-**/postgresql/

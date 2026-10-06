@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # uninstall.sh — removes everything runner-bot created on this machine.
 #
-#   1. docker compose down --rmi all --volumes --remove-orphans
-#      (container runner-bot, image runner-bot:latest, network runner-bot_default, container logs)
+#   1. Removes the runner-bot service from the "homelab" Compose project
+#      (container runner-bot, image homelab-runner-bot, network homelab_bot, container logs).
+#      The other stacks in the project are not touched.
 #   2. Offers to remove the base image python:3.12-slim — skipped automatically if any other
 #      container or image still uses it.
 #   3. docker builder prune -f (clears the BuildKit build cache — note: all of it, not only this bot's)
@@ -14,9 +15,10 @@
 set -euo pipefail
 
 BASE_IMAGE="python:3.12-slim"
-BOT_IMAGE="runner-bot:latest"
+BOT_IMAGE="homelab-runner-bot"
 SECRET_DIR="/root/.secrets/runner-bot"
-PROJECT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"   # .../homelab/runner-bot
+HOMELAB_DIR="$(dirname "${PROJECT_DIR}")"                          # .../homelab (root compose.yaml)
 SKIPPED=()
 
 confirm() {
@@ -30,16 +32,17 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-cd "${PROJECT_DIR}"
+cd "${HOMELAB_DIR}"
 
-echo "==> 1/4  Container, bot image, network, volumes"
+echo "==> 1/4  Container, bot image, network"
 if [[ -f compose.yaml ]]; then
-  docker compose down --rmi all --volumes --remove-orphans || echo "    (compose down reported an error; continuing)"
+  # Only this service: stop + remove its container, then its image and private network.
+  docker compose rm -sf runner-bot || echo "    (compose rm reported an error; continuing)"
 else
-  echo "    compose.yaml not found in ${PROJECT_DIR}; trying direct removal"
+  echo "    compose.yaml not found in ${HOMELAB_DIR}; trying direct removal"
   docker rm -f runner-bot >/dev/null 2>&1 || true
-  docker network rm runner-bot_default >/dev/null 2>&1 || true
 fi
+docker network rm homelab_bot >/dev/null 2>&1 && echo "    removed network homelab_bot" || true
 # Belt and braces in case the tag survived (e.g. image was retagged by hand).
 docker image rm "${BOT_IMAGE}" >/dev/null 2>&1 && echo "    removed leftover ${BOT_IMAGE}" || true
 

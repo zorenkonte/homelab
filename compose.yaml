@@ -1,0 +1,15 @@
+# homelab — ONE Compose project ("homelab") for everything that runs in Docker on the Pi.
+# Each folder holds its own compose.yaml and a gitignored .env for its secrets; this file just
+# stitches them into a single stack, so every container, network, volume and built image is
+# prefixed homelab_ / homelab- and shows up in Portainer as one stack.
+#
+#   cd /root/src/homelab && docker compose up -d --build
+#
+# Relative paths inside each included file resolve against that file's folder.
+
+name: homelab
+
+include:
+  - nginx-proxy-manager/compose.yaml
+  - monitoring/compose.yaml
+  - runner-bot/compose.yaml

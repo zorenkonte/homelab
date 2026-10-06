@@ -1,35 +1,62 @@
+# nginx-proxy-manager — reverse proxy for *.home.lab (proxy hosts point at the Pi's host ports).
+# Part of the single "homelab" project: deploy from /root/src/homelab with `docker compose up -d`.
+#
+# Secrets: the Postgres credentials, in the gitignored .env next to this file (see env.example).
+# Data lives in named volumes (homelab_npm-data, homelab_npm-letsencrypt, homelab_npm-db), so a
+# `docker compose up` from any checkout location finds the same data.
+
 services:
-  app:
+  npm:
     image: 'jc21/nginx-proxy-manager:latest'
+    container_name: npm
     restart: unless-stopped
     ports:
-      # These ports are in format <host-port>:<container-port>
-      - '80:80' # Public HTTP Port
-      - '443:443' # Public HTTPS Port
-      - '81:81' # Admin Web Port
-      # Add any other Stream port you want to expose
-      # - '21:21' # FTP
+      - '80:80'    # public HTTP
+      - '443:443'  # public HTTPS
+      - '81:81'    # admin UI (npm.home.lab)
     environment:
       TZ: "Asia/Manila"
-      # Postgres parameters:
-      DB_POSTGRES_HOST: 'db'
+      DB_POSTGRES_HOST: 'npm-db'
       DB_POSTGRES_PORT: '5432'
-      DB_POSTGRES_USER: ${DB_POSTGRES_USER}
-      DB_POSTGRES_PASSWORD: ${DB_POSTGRES_PASSWORD}
-      DB_POSTGRES_NAME: ${DB_POSTGRES_DB}
-      # Uncomment this if IPv6 is not enabled on your host
-      # DISABLE_IPV6: 'true'
+      DB_POSTGRES_USER: ${DB_POSTGRES_USER:?set in nginx-proxy-manager/.env}
+      DB_POSTGRES_PASSWORD: ${DB_POSTGRES_PASSWORD:?set in nginx-proxy-manager/.env}
+      DB_POSTGRES_NAME: ${DB_POSTGRES_DB:?set in nginx-proxy-manager/.env}
     volumes:
-      - ./data:/data
-      - ./letsencrypt:/etc/letsencrypt
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+    networks:
+      - proxy
     depends_on:
-      - db
+      - npm-db
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  db:
+  npm-db:
     image: postgres:17
+    container_name: npm-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_POSTGRES_USER}
       POSTGRES_PASSWORD: ${DB_POSTGRES_PASSWORD}
       POSTGRES_DB: ${DB_POSTGRES_DB}
     volumes:
-      - ./postgresql:/var/lib/postgresql
+      - npm-db:/var/lib/postgresql/data   # the image's real data dir (the old file mounted the parent)
+    networks:
+      - proxy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  npm-data:
+  npm-letsencrypt:
+  npm-db:
+
+networks:
+  proxy:
+    driver: bridge

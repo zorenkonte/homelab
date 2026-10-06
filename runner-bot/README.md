@@ -1,7 +1,8 @@
 # runner-bot
 
-Part of the `homelab` repository; this folder is `runner-bot/` inside the clone at
-`/root/src/homelab`. Run all commands below from that folder.
+Part of the `homelab` repository and of the single `homelab` Compose project: this folder is
+`runner-bot/` inside the clone at `/root/src/homelab`. Run all `docker compose` commands below from
+`/root/src/homelab` (the root `compose.yaml` includes this folder), naming the `runner-bot` service.
 
 A small, hardened Telegram bot that runs as a Docker container on the Raspberry Pi and manages
 GitHub Actions **self-hosted runners for one repository**:
@@ -36,8 +37,9 @@ chown 10001:10001 /root/.secrets/runner-bot/github_pat /root/.secrets/runner-bot
 chmod 400       /root/.secrets/runner-bot/github_pat /root/.secrets/runner-bot/telegram_bot_token
 nano compose.yaml                            # fill GITHUB_OWNER, GITHUB_REPO
 echo "ALLOWED_USER_IDS=<your id>" > .env          # your Telegram user id(s), comma-separated; .env is gitignored
-docker compose up -d --build
-docker compose logs -f
+cd /root/src/homelab
+docker compose up -d --build runner-bot
+docker compose logs -f runner-bot
 ```
 
 The secrets reach the container only as Compose file secrets, bind-mounted read-only at
@@ -46,19 +48,19 @@ so `docker inspect runner-bot` and Portainer never show them.
 
 On startup the bot checks that every config value and both secret files are present and non-empty.
 If anything is missing it logs the *name* of the problem (never a value) and exits. Because of
-`restart: unless-stopped` Docker will keep retrying; fix the problem and run `docker compose restart`.
+`restart: unless-stopped` Docker will keep retrying; fix the problem and run `docker compose restart runner-bot`.
 
 ## Day-to-day
 
-| Action | Command (run in `/root/src/homelab/runner-bot`) |
+| Action | Command (run in `/root/src/homelab`) |
 |---|---|
-| Start / rebuild after a code change | `docker compose up -d --build` |
-| Stop (stays stopped across reboots) | `docker compose stop` |
-| Start again | `docker compose start` |
-| Restart | `docker compose restart` |
-| Logs | `docker compose logs -f` |
+| Start / rebuild after a code change | `docker compose up -d --build runner-bot` |
+| Stop (stays stopped across reboots) | `docker compose stop runner-bot` |
+| Start again | `docker compose start runner-bot` |
+| Restart | `docker compose restart runner-bot` |
+| Logs | `docker compose logs -f runner-bot` |
 | Health | `docker inspect -f '{{.State.Health.Status}}' runner-bot` |
-| Update dependencies | bump the pins in `requirements.txt`, then `docker compose up -d --build` |
+| Update dependencies | bump the pins in `requirements.txt`, then `docker compose up -d --build runner-bot` |
 
 Every command is logged to stdout as `cmd=/token user=<id> result=ok|fail github_status=<code>`.
 Logs are capped at 3 × 10 MB per container by the `json-file` driver.
@@ -72,7 +74,7 @@ result, so every client, including Telegram Web K, sees that something is happen
 To show an animated sticker instead, set `LOADING_STICKER` in `compose.yaml` to either
 `SetName:emoji` (the bot picks the matching sticker from that set at startup) or a sticker `file_id`.
 Send any sticker to the bot and it replies with its set name, emoji and file id, ready to paste.
-Apply with `docker compose up -d`. The sticker is sent while GitHub is called, then deleted and the
+Apply with `docker compose up -d runner-bot`. The sticker is sent while GitHub is called, then deleted and the
 result is sent as a new message. If the set or emoji cannot be found the bot logs a warning and falls
 back to the text placeholder. The placeholder stays on screen for at least 1.5 s so it does not just blink.
 Stickers are looked up through the Telegram API only; nothing else is fetched at runtime.
@@ -88,14 +90,14 @@ one, which resets the owner to root. The container runs as uid 10001 and cannot 
 nano /root/.secrets/runner-bot/github_pat          # or telegram_bot_token
 chown 10001:10001 /root/.secrets/runner-bot/github_pat
 chmod 400         /root/.secrets/runner-bot/github_pat
-docker compose restart                              # secrets are read once at startup
+docker compose restart runner-bot                   # secrets are read once at startup
 ```
 
 ## Rotating the PAT or the bot token
 
 1. Create the new credential first (new PAT on GitHub, or `/revoke` in @BotFather to get a new token).
 2. Write it into the matching file as described above, fix owner and mode.
-3. `docker compose restart` and check `docker compose logs -f` shows `runner-bot started`.
+3. `docker compose restart runner-bot` and check `docker compose logs -f runner-bot` shows `runner-bot started`.
 4. Only then revoke the old credential (GitHub token page / already done by `/revoke`).
 
 ## Full removal
@@ -105,7 +107,7 @@ cd /root/src/homelab/runner-bot
 ./uninstall.sh
 ```
 
-The script runs `docker compose down --rmi all --volumes --remove-orphans`, offers to remove the
+The script removes the `runner-bot` service from the `homelab` project (`docker compose rm -sf runner-bot`, its image and network), offers to remove the
 `python:3.12-slim` base image (skipped automatically if any other container or image uses it), runs
 `docker builder prune -f` (this clears the whole BuildKit cache on the host, not just this bot's),
 asks before deleting `/root/.secrets/runner-bot`, and finally reminds you to revoke the PAT, delete the
@@ -119,7 +121,7 @@ bot with BotFather (`/deletebot`), and `rm -rf /root/src/homelab/runner-bot` if 
 | Secret folder and two secret files | `/root/.secrets/runner-bot` (and the parent `/root/.secrets` if it was created for this) | `uninstall.sh` step 4 (asks first) |
 | Container | `runner-bot` | `uninstall.sh` step 1 |
 | Container logs (json-file, ≤ 30 MB) | `/var/lib/docker/containers/<id>/` | removed with the container |
-| Bot image | `runner-bot:latest` | `uninstall.sh` step 1 |
+| Bot image | `homelab-runner-bot` | `uninstall.sh` step 1 |
 | Base image | `python:3.12-slim` | `uninstall.sh` step 2 (asks, skips if shared) |
 | BuildKit build cache | Docker's data root | `uninstall.sh` step 3 |
 | Compose network | `runner-bot_default` | `uninstall.sh` step 1 |
@@ -154,7 +156,7 @@ shows only the five non-secret variables; the secrets are files under `/run/secr
 docker exec runner-bot id                                   # uid=10001 gid=10001
 docker inspect runner-bot --format '{{json .Config.Env}}'    # no PAT, no bot token
 docker inspect runner-bot --format '{{json .HostConfig.ReadonlyRootfs}} {{json .HostConfig.CapDrop}}'
-docker compose logs --tail 20                                # "runner-bot started: repo=…"
+docker compose logs --tail 20 runner-bot                     # "runner-bot started: repo=…"
 ```
 
 Then in Telegram: `/help`, `/token`, `/runners`, and from an account that is **not** in

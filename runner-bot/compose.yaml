@@ -4,15 +4,17 @@
 # and appear inside the container at /run/secrets/<name>. Nothing secret is in `environment:`,
 # so `docker inspect` and Portainer show no credentials.
 #
-# Fill in GITHUB_OWNER and GITHUB_REPO below and ALLOWED_USER_IDS in .env, then: docker compose up -d --build
-
-name: runner-bot
+# Fill in GITHUB_OWNER and GITHUB_REPO below and ALLOWED_USER_IDS in .env.
+# Part of the single "homelab" project: run from /root/src/homelab, e.g.
+#   docker compose up -d --build runner-bot     docker compose logs -f runner-bot
 
 services:
   runner-bot:
     build: .
-    image: runner-bot:latest
+    image: homelab-runner-bot
     container_name: runner-bot
+    networks:
+      - bot                            # its own network: nothing else in the stack can reach it
     restart: unless-stopped          # a manually stopped container stays stopped across reboots
     user: "10001:10001"              # must match the Dockerfile user and the secret files' owner
 
@@ -66,3 +68,7 @@ secrets:
     file: /root/.secrets/runner-bot/github_pat
   telegram_bot_token:
     file: /root/.secrets/runner-bot/telegram_bot_token
+
+networks:
+  bot:
+    driver: bridge

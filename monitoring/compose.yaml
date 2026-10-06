@@ -2,10 +2,8 @@
 # Based on https://github.com/oijkn/Docker-Raspberry-PI-Monitoring (commit 63e6596).
 #
 # Secrets: only the Grafana admin login, in the gitignored .env next to this file (see env.example).
-# Deploy from this folder:  docker compose up -d
-# Volumes are monitoring_grafana-data and monitoring_prometheus-data; network is monitoring_internal.
-
-name: monitoring
+# Part of the single "homelab" project: deploy from /root/src/homelab with `docker compose up -d`.
+# Volumes: homelab_grafana-data, homelab_prometheus-data. Network: homelab_internal.
 
 services:
   grafana:
@@ -172,11 +170,6 @@ volumes:
 networks:
   internal:
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.20.0.0/16
-          gateway: 172.20.0.1
     labels:
       - "com.example.description=Monitoring Network"
       - "com.example.service=monitoring"
