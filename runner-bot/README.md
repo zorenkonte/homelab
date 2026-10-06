@@ -1,5 +1,8 @@
 # runner-bot
 
+Part of the `homelab` repository; this folder is `runner-bot/` inside the clone at
+`/root/src/homelab`. Run all commands below from that folder.
+
 A small, hardened Telegram bot that runs as a Docker container on the Raspberry Pi and manages
 GitHub Actions **self-hosted runners for one repository**:
 
@@ -25,7 +28,7 @@ ports, no reverse proxy, and no web UI.
 ## First-time setup
 
 ```bash
-cd /root/src/runner-bot
+cd /root/src/homelab/runner-bot
 ./setup.sh                                   # creates /root/.secrets/runner-bot and two EMPTY files, then stops
 nano /root/.secrets/runner-bot/github_pat    # paste the PAT, one line
 nano /root/.secrets/runner-bot/telegram_bot_token
@@ -46,7 +49,7 @@ If anything is missing it logs the *name* of the problem (never a value) and exi
 
 ## Day-to-day
 
-| Action | Command (run in `/root/src/runner-bot`) |
+| Action | Command (run in `/root/src/homelab/runner-bot`) |
 |---|---|
 | Start / rebuild after a code change | `docker compose up -d --build` |
 | Stop (stays stopped across reboots) | `docker compose stop` |
@@ -97,7 +100,7 @@ docker compose restart                              # secrets are read once at s
 ## Full removal
 
 ```bash
-cd /root/src/runner-bot
+cd /root/src/homelab/runner-bot
 ./uninstall.sh
 ```
 
@@ -105,13 +108,13 @@ The script runs `docker compose down --rmi all --volumes --remove-orphans`, offe
 `python:3.12-slim` base image (skipped automatically if any other container or image uses it), runs
 `docker builder prune -f` (this clears the whole BuildKit cache on the host, not just this bot's),
 asks before deleting `/root/.secrets/runner-bot`, and finally reminds you to revoke the PAT, delete the
-bot with BotFather (`/deletebot`), and `rm -rf /root/src/runner-bot` if you want the code gone too.
+bot with BotFather (`/deletebot`), and `rm -rf /root/src/homelab/runner-bot` if you want the code gone too.
 
 ## Exactly what exists on the Pi because of this bot
 
 | Item | Where | Removed by |
 |---|---|---|
-| Project folder (code, this README) | `/root/src/runner-bot` | you: `rm -rf /root/src/runner-bot` |
+| Project folder (code, this README) | `/root/src/homelab/runner-bot` | you: `rm -rf /root/src/homelab/runner-bot` |
 | Secret folder and two secret files | `/root/.secrets/runner-bot` (and the parent `/root/.secrets` if it was created for this) | `uninstall.sh` step 4 (asks first) |
 | Container | `runner-bot` | `uninstall.sh` step 1 |
 | Container logs (json-file, ≤ 30 MB) | `/var/lib/docker/containers/<id>/` | removed with the container |

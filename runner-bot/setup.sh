@@ -68,7 +68,7 @@ cat <<EOF
 
   3. Fill the REPLACE_ME placeholders in compose.yaml (GITHUB_OWNER, GITHUB_REPO, ALLOWED_USER_IDS).
 
-  4. Start the bot:   cd /root/src/runner-bot && docker compose up -d --build
+  4. Start the bot:   cd /root/src/homelab/runner-bot && docker compose up -d --build
      Follow logs:     docker compose logs -f
 
 Stopping here. Nothing has been started.
