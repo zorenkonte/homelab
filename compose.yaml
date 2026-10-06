@@ -23,6 +23,9 @@ services:
       ALLOWED_USER_IDS: "5680807414"        # <-- Telegram numeric user IDs, comma-separated, e.g. "123456789,987654321"
       TOKEN_MESSAGE_TTL_SECONDS: "300"
       TZ: "Asia/Manila"
+      # Optional loading sticker shown while GitHub is called. Either "<SetName>:<emoji>" or a
+      # sticker file_id. Send any sticker to the bot and it replies with both. Empty = text only.
+      LOADING_STICKER: "UtyaDuck:🧮"
 
     # ---- secrets (file-backed, bind-mounted read-only at /run/secrets/...) ---------
     secrets:

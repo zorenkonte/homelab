@@ -59,6 +59,20 @@ If anything is missing it logs the *name* of the problem (never a value) and exi
 Every command is logged to stdout as `cmd=/token user=<id> result=ok|fail github_status=<code>`.
 Logs are capped at 3 × 10 MB per container by the `json-file` driver.
 
+## Loading indicator
+
+While the bot waits for GitHub it shows a placeholder ("🏃 Fetching runners…",
+"🔑 Requesting registration token…", "🔍 Looking up runner…") and then edits it into the
+result, so every client, including Telegram Web K, sees that something is happening.
+
+To show an animated sticker instead, set `LOADING_STICKER` in `compose.yaml` to either
+`SetName:emoji` (the bot picks the matching sticker from that set at startup) or a sticker `file_id`.
+Send any sticker to the bot and it replies with its set name, emoji and file id, ready to paste.
+Apply with `docker compose up -d`. The sticker is sent while GitHub is called, then deleted and the
+result is sent as a new message. If the set or emoji cannot be found the bot logs a warning and falls
+back to the text placeholder. The placeholder stays on screen for at least 1.5 s so it does not just blink.
+Stickers are looked up through the Telegram API only; nothing else is fetched at runtime.
+
 ## Editing a secret file later
 
 Some editors (including `nano` in its default configuration when the file is not writable by the

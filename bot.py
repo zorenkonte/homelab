@@ -13,6 +13,7 @@ Security properties (keep them when editing):
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -31,6 +32,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
+    Message,
     Update,
 )
 from telegram.constants import ChatType, ParseMode
@@ -56,6 +58,8 @@ TOKEN_RATE_LIMIT_SECONDS = 60
 REMOVE_CONFIRM_WINDOW_SECONDS = 120
 HEARTBEAT_FILE = Path("/tmp/heartbeat")
 HEARTBEAT_INTERVAL_SECONDS = 30
+PLACEHOLDER_MIN_SECONDS = 1.5  # keep the loading placeholder on screen at least this long
+EMOJI_NOISE = str.maketrans("", "", "️‍♀♂")  # variation selector, ZWJ, gender signs
 TELEGRAM_CHUNK_CHARS = 3500
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
@@ -140,6 +144,7 @@ class Config:
     allowed_ids: frozenset[int]
     ttl_seconds: int
     tz: ZoneInfo
+    loading_sticker: str  # "" | "<set_name>:<emoji>" | "<sticker file_id>"
     github_pat: str = field(repr=False)
     telegram_token: str = field(repr=False)
 
@@ -186,6 +191,9 @@ def load_config() -> Config:
     ids_raw = env("ALLOWED_USER_IDS")
     ttl_raw = env("TOKEN_MESSAGE_TTL_SECONDS")
     tz_raw = env("TZ")
+    loading_sticker = os.environ.get("LOADING_STICKER", "").strip()  # optional
+    if len(loading_sticker) > 200:
+        problems.append("environment variable has an invalid value: LOADING_STICKER")
 
     if owner and not NAME_RE.match(owner):
         problems.append("environment variable has an invalid value: GITHUB_OWNER")
@@ -237,6 +245,7 @@ def load_config() -> Config:
         allowed_ids=frozenset(allowed),
         ttl_seconds=ttl,
         tz=tz,
+        loading_sticker=loading_sticker,
         github_pat=pat,
         telegram_token=bot_token,
     )
@@ -281,6 +290,84 @@ async def gh(context: ContextTypes.DEFAULT_TYPE, method: str, path: str) -> tupl
             (str(message)[:200] if message else ""),
         )
     return response.status_code, data
+
+
+class Placeholder:
+    """A 'working on it…' message shown while a GitHub call runs.
+
+    If a loading sticker is configured (LOADING_STICKER) the placeholder is that sticker;
+    otherwise a plain text message. finish() turns it into the final reply: a text placeholder
+    is edited in place, a sticker is deleted and replaced (stickers cannot be edited into text).
+    """
+
+    def __init__(self, message: Message, is_sticker: bool, started: float) -> None:
+        self.message = message
+        self.is_sticker = is_sticker
+        self.started = started
+
+    @classmethod
+    async def send(cls, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str) -> "Placeholder":
+        started = time.monotonic()
+        file_id = context.bot_data.get("loading_sticker_file_id")
+        if file_id:
+            try:
+                message = await context.bot.send_sticker(chat_id=chat_id, sticker=file_id)
+                return cls(message, True, started)
+            except TelegramError as exc:
+                log.warning("loading sticker failed, using text placeholder: %s", exc.__class__.__name__)
+        message = await context.bot.send_message(chat_id=chat_id, text=text)
+        return cls(message, False, started)
+
+    async def finish(self, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
+        remaining = PLACEHOLDER_MIN_SECONDS - (time.monotonic() - self.started)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        if self.is_sticker:
+            try:
+                await self.message.delete()
+            except TelegramError as exc:
+                log.warning("could not delete placeholder: %s", exc.__class__.__name__)
+            return await context.bot.send_message(chat_id=self.message.chat_id, text=text, reply_markup=reply_markup)
+        edited = await self.message.edit_text(text, reply_markup=reply_markup)
+        return edited if isinstance(edited, Message) else self.message
+
+
+def emoji_key(value: str | None) -> str:
+    return (value or "").translate(EMOJI_NOISE)
+
+
+async def resolve_loading_sticker(app: Application, spec: str) -> str | None:
+    """Turns LOADING_STICKER into a sticker file_id, or None if unusable (logged, never fatal)."""
+    if not spec:
+        return None
+    if ":" not in spec:
+        return spec  # a raw file_id obtained by sending a sticker to the bot
+    set_name, _, emoji = spec.partition(":")
+    try:
+        sticker_set = await app.bot.get_sticker_set(set_name)
+    except TelegramError as exc:
+        log.warning("LOADING_STICKER: sticker set %r not available (%s); using text placeholder", set_name, exc.__class__.__name__)
+        return None
+    wanted = emoji_key(emoji)
+    for sticker in sticker_set.stickers:
+        if wanted and wanted in emoji_key(sticker.emoji):
+            kind = "animated" if sticker.is_animated else "video" if sticker.is_video else "static"
+            log.info("LOADING_STICKER: using %s sticker %s from set %s", kind, sticker.emoji, set_name)
+            return sticker.file_id
+    available = " ".join(dict.fromkeys(s.emoji for s in sticker_set.stickers if s.emoji))
+    log.warning(
+        "LOADING_STICKER: no sticker with emoji %s in set %s (%d stickers); using text placeholder. Available: %s",
+        emoji, set_name, len(sticker_set.stickers), available,
+    )
+    return None
+
+
+async def gh_with_placeholder(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, method: str, path: str
+) -> tuple[Placeholder, int, object]:
+    placeholder = await Placeholder.send(context, chat_id, text)
+    status, data = await gh(context, method, path)
+    return placeholder, status, data
 
 
 def gh_error_text(status: int) -> str:
@@ -351,10 +438,13 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     context.bot_data["last_token_ts"] = now
 
-    status, data = await gh(context, "POST", f"{c.repo_path}/actions/runners/registration-token")
+    placeholder, status, data = await gh_with_placeholder(
+        context, message.chat_id, "🔑 Requesting registration token…",
+        "POST", f"{c.repo_path}/actions/runners/registration-token",
+    )
     token = data.get("token") if isinstance(data, dict) else None
     if status != 201 or not isinstance(token, str) or not token:
-        await message.reply_text(gh_error_text(status))
+        await placeholder.finish(context, gh_error_text(status))
         audit(user_id, "/token", False, status)
         return
 
@@ -366,7 +456,7 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"<code>./config.sh --url {esc(c.repo_url)} --token {esc(token)}</code>\n\n"
         f"<i>This message and your command are deleted in {c.ttl_seconds} s.</i>"
     )
-    sent = await message.reply_text(text)
+    sent = await placeholder.finish(context, text)
     context.job_queue.run_once(
         delete_messages_job,
         when=c.ttl_seconds,
@@ -390,15 +480,18 @@ async def cmd_runners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     message = update.effective_message
 
-    status, data = await gh(context, "GET", f"{c.repo_path}/actions/runners?per_page=100")
+    placeholder, status, data = await gh_with_placeholder(
+        context, message.chat_id, "🏃 Fetching runners…",
+        "GET", f"{c.repo_path}/actions/runners?per_page=100",
+    )
     runners = data.get("runners") if isinstance(data, dict) else None
     if status != 200 or not isinstance(runners, list):
-        await message.reply_text(gh_error_text(status))
+        await placeholder.finish(context, gh_error_text(status))
         audit(user_id, "/runners", False, status)
         return
 
     if not runners:
-        await message.reply_text("No self-hosted runners are registered.")
+        await placeholder.finish(context, "No self-hosted runners are registered.")
         audit(user_id, "/runners", True, status, note="count=0")
         return
 
@@ -417,7 +510,9 @@ async def cmd_runners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"   labels: {', '.join(labels) if labels else '-'}"
         )
 
-    for chunk in chunk_lines(lines):
+    chunks = chunk_lines(lines)
+    await placeholder.finish(context, chunks[0])
+    for chunk in chunks[1:]:
         await message.reply_text(chunk)
     audit(user_id, "/runners", True, status, note=f"count={len(runners)}")
 
@@ -449,9 +544,12 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     runner_id = int(args[0])
 
-    status, data = await gh(context, "GET", f"{c.repo_path}/actions/runners/{runner_id}")
+    placeholder, status, data = await gh_with_placeholder(
+        context, message.chat_id, f"🔍 Looking up runner {runner_id}…",
+        "GET", f"{c.repo_path}/actions/runners/{runner_id}",
+    )
     if status != 200 or not isinstance(data, dict):
-        await message.reply_text(gh_error_text(status))
+        await placeholder.finish(context, gh_error_text(status))
         audit(user_id, "/remove", False, status, note=f"lookup id={runner_id}")
         return
     name = str(data.get("name", "?"))
@@ -474,7 +572,8 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             InlineKeyboardButton("❌ Cancel", callback_data=f"rm:no:{nonce}"),
         ]]
     )
-    await message.reply_text(
+    await placeholder.finish(
+        context,
         f"Remove runner <b>{esc(name)}</b> (id <code>{runner_id}</code>)?\n"
         f"This cannot be undone. The buttons expire in {REMOVE_CONFIRM_WINDOW_SECONDS} s.",
         reply_markup=keyboard,
@@ -522,6 +621,10 @@ async def on_remove_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await query.answer("Removing…")
+    try:
+        await query.edit_message_text(f"🗑 Removing runner <b>{esc(name)}</b> (id <code>{runner_id}</code>)…")
+    except TelegramError as exc:
+        log.warning("could not show removal placeholder: %s", exc.__class__.__name__)
     status, _ = await gh(context, "DELETE", f"{c.repo_path}/actions/runners/{runner_id}")
     if status == 204:
         await query.edit_message_text(f"Removed runner <b>{esc(name)}</b> (id <code>{runner_id}</code>).")
@@ -529,6 +632,24 @@ async def on_remove_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         await query.edit_message_text(gh_error_text(status))
         audit(user_id, "/remove", False, status, note=f"delete id={runner_id}")
+
+
+async def on_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Replies with a sticker's identifiers so it can be configured as LOADING_STICKER."""
+    sticker = update.effective_message.sticker
+    kind = "animated" if sticker.is_animated else "video" if sticker.is_video else "static"
+    if sticker.set_name:
+        suggestion = f"<code>{esc(sticker.set_name)}:{esc(sticker.emoji or '')}</code>"
+    else:
+        suggestion = f"<code>{esc(sticker.file_id)}</code>"
+    await update.effective_message.reply_text(
+        f"Sticker: {kind}, set <code>{esc(sticker.set_name or '-')}</code>, emoji {esc(sticker.emoji or '-')}\n"
+        f"file_id: <code>{esc(sticker.file_id)}</code>\n\n"
+        f"To use it as the loading placeholder, set in compose.yaml:\n"
+        f"LOADING_STICKER: {suggestion}\n"
+        f"then run <code>docker compose up -d</code>."
+    )
+    audit(update.effective_user.id, "sticker", True, note=kind)
 
 
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -576,13 +697,15 @@ async def post_init(app: Application) -> None:
         ]
     )
     app.job_queue.run_repeating(heartbeat_job, interval=HEARTBEAT_INTERVAL_SECONDS, first=1, name="heartbeat")
+    app.bot_data["loading_sticker_file_id"] = await resolve_loading_sticker(app, c.loading_sticker)
     log.info(
-        "runner-bot started: repo=%s/%s allowlisted_users=%d token_ttl=%ss tz=%s",
+        "runner-bot started: repo=%s/%s allowlisted_users=%d token_ttl=%ss tz=%s loading_sticker=%s",
         c.owner,
         c.repo,
         len(c.allowed_ids),
         c.ttl_seconds,
         c.tz.key,
+        "yes" if app.bot_data["loading_sticker_file_id"] else "no (text placeholder)",
     )
 
 
@@ -618,6 +741,7 @@ def build_app(config: Config) -> Application:
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CallbackQueryHandler(on_remove_button, pattern=r"^rm:(yes|no):[A-Za-z0-9_-]{1,32}$"))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
+    app.add_handler(MessageHandler(filters.Sticker.ALL, on_sticker))
     app.add_error_handler(on_error)
     return app
 
