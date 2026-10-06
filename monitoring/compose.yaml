@@ -1,4 +1,11 @@
-# https://github.com/oijkn/Docker-Raspberry-PI-Monitoring/blob/63e65968745f1222b44f562f7d578394c0e7f832/docker-compose.yml
+# monitoring — Grafana + Prometheus + cAdvisor + node-exporter for the Raspberry Pi.
+# Based on https://github.com/oijkn/Docker-Raspberry-PI-Monitoring (commit 63e6596).
+#
+# Secrets: only the Grafana admin login, in the gitignored .env next to this file (see env.example).
+# Deploy from this folder:  docker compose up -d
+# Volumes are monitoring_grafana-data and monitoring_prometheus-data; network is monitoring_internal.
+
+name: monitoring
 
 services:
   grafana:
@@ -12,7 +19,10 @@ services:
     ports:
       - "3000:3000"
     env_file:
-      - ./grafana/.env
+      - ./.env                      # GF_SECURITY_ADMIN_USER / GF_SECURITY_ADMIN_PASSWORD
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/rpi-monitoring.json
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning

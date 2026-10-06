@@ -1,0 +1,9 @@
+# Secrets live in per-stack .env files (and /root/.secrets for runner-bot); never commit them.
+.env
+.env.*
+*.env
+!env.example
+# Local data directories that a stack may create next to its compose file
+**/data/
+**/letsencrypt/
+**/postgresql/
