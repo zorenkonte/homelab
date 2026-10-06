@@ -25,7 +25,7 @@ services:
       TZ: "Asia/Manila"
       # Optional loading sticker shown while GitHub is called. Either "<SetName>:<emoji>" or a
       # sticker file_id. Send any sticker to the bot and it replies with both. Empty = text only.
-      LOADING_STICKER: "UtyaDuck:🤔"
+      LOADING_STICKER: ""   # e.g. "UtyaDuck:🤔"; empty = text placeholder only
 
     # ---- secrets (file-backed, bind-mounted read-only at /run/secrets/...) ---------
     secrets:

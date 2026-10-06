@@ -300,32 +300,41 @@ async def gh(context: ContextTypes.DEFAULT_TYPE, method: str, path: str) -> tupl
 
 
 class Placeholder:
-    """A 'working on it…' message shown while a GitHub call runs.
+    """A 'working on it…' bubble shown while a GitHub call runs. Three kinds:
 
-    If a loading sticker is configured (LOADING_STICKER) the placeholder is that sticker;
-    otherwise a plain text message. finish() turns it into the final reply: a text placeholder
-    is edited in place, a sticker is deleted and replaced (stickers cannot be edited into text).
+    * "draft" (default): a native Telegram message draft. The SAME bubble later streams the
+      result (drafts with the same draft_id) and finally becomes the real message, so nothing
+      is deleted or re-sent.
+    * "sticker": the configured LOADING_STICKER; deleted and replaced (stickers cannot change).
+    * "text": a plain message, used only if the draft could not be sent; edited in place.
     """
 
-    def __init__(self, message: Message, is_sticker: bool, started: float) -> None:
+    def __init__(self, kind: str, chat_id: int, draft_id: int, message: Message | None, started: float) -> None:
+        self.kind = kind
+        self.chat_id = chat_id
+        self.draft_id = draft_id
         self.message = message
-        self.is_sticker = is_sticker
         self.started = started
 
     @classmethod
-    async def send(cls, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str) -> "Placeholder":
+    async def send(cls, context: ContextTypes.DEFAULT_TYPE, chat_id: int, draft_id: int, text: str) -> "Placeholder":
         started = time.monotonic()
         placeholder: Placeholder | None = None
         file_id = context.bot_data.get("loading_sticker_file_id")
         if file_id:
             try:
                 message = await context.bot.send_sticker(chat_id=chat_id, sticker=file_id)
-                placeholder = cls(message, True, started)
+                placeholder = cls("sticker", chat_id, draft_id, message, started)
             except TelegramError as exc:
-                log.warning("loading sticker failed, using text placeholder: %s", exc.__class__.__name__)
+                log.warning("loading sticker failed, using a draft placeholder: %s", exc.__class__.__name__)
         if placeholder is None:
-            message = await context.bot.send_message(chat_id=chat_id, text=text)
-            placeholder = cls(message, False, started)
+            try:
+                await context.bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=text)
+                placeholder = cls("draft", chat_id, draft_id, None, started)
+            except TelegramError as exc:
+                log.warning("draft placeholder failed, using a text placeholder: %s", exc.__class__.__name__)
+                message = await context.bot.send_message(chat_id=chat_id, text=text)
+                placeholder = cls("text", chat_id, draft_id, message, started)
         # Sent AFTER the placeholder: Telegram clears a bot's typing status whenever the bot
         # sends a message, so this keeps "typing…" in the header until the result arrives.
         try:
@@ -339,24 +348,27 @@ class Placeholder:
         if remaining > 0:
             await asyncio.sleep(remaining)
 
-    async def discard(self) -> None:
-        """Removes the placeholder without sending anything (the caller streams the reply itself)."""
+    async def finish(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        stream: bool = False,
+    ) -> Message:
+        """Turns the placeholder into the final reply. With stream=True the text streams in first
+        (native drafts), which only a draft or sticker placeholder can do."""
         await self._hold()
-        try:
-            await self.message.delete()
-        except TelegramError as exc:
-            log.warning("could not delete placeholder: %s", exc.__class__.__name__)
-
-    async def finish(self, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
-        await self._hold()
-        if self.is_sticker:
+        if self.kind == "text":
+            edited = await self.message.edit_text(text, reply_markup=reply_markup)
+            return edited if isinstance(edited, Message) else self.message
+        if self.kind == "sticker":
             try:
                 await self.message.delete()
             except TelegramError as exc:
                 log.warning("could not delete placeholder: %s", exc.__class__.__name__)
-            return await context.bot.send_message(chat_id=self.message.chat_id, text=text, reply_markup=reply_markup)
-        edited = await self.message.edit_text(text, reply_markup=reply_markup)
-        return edited if isinstance(edited, Message) else self.message
+        if stream:
+            return await stream_message(context, self.chat_id, self.draft_id, text, reply_markup)
+        return await context.bot.send_message(chat_id=self.chat_id, text=text, reply_markup=reply_markup)
 
 
 def emoji_key(value: str | None) -> str:
@@ -390,9 +402,10 @@ async def resolve_loading_sticker(app: Application, spec: str) -> str | None:
 
 
 async def gh_with_placeholder(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, method: str, path: str
+    context: ContextTypes.DEFAULT_TYPE, command: Message, text: str, method: str, path: str
 ) -> tuple[Placeholder, int, object]:
-    placeholder = await Placeholder.send(context, chat_id, text)
+    """Shows a placeholder in reply to `command` (its id doubles as the draft id), then calls GitHub."""
+    placeholder = await Placeholder.send(context, command.chat_id, command.message_id, text)
     status, data = await gh(context, method, path)
     return placeholder, status, data
 
@@ -466,7 +479,7 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.bot_data["last_token_ts"] = now
 
     placeholder, status, data = await gh_with_placeholder(
-        context, message.chat_id, "🔑 Requesting registration token…",
+        context, message, "🔑 Requesting registration token",
         "POST", f"{c.repo_path}/actions/runners/registration-token",
     )
     token = data.get("token") if isinstance(data, dict) else None
@@ -508,7 +521,7 @@ async def cmd_runners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.effective_message
 
     placeholder, status, data = await gh_with_placeholder(
-        context, message.chat_id, "🏃 Fetching runners…",
+        context, message, "🏃 Fetching runners",
         "GET", f"{c.repo_path}/actions/runners?per_page=100",
     )
     runners = data.get("runners") if isinstance(data, dict) else None
@@ -538,8 +551,7 @@ async def cmd_runners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     groups = chunk_lines(lines)
-    await placeholder.discard()
-    await stream_message(context, message.chat_id, message.message_id, "\n".join(groups[0]))
+    await placeholder.finish(context, "\n".join(groups[0]), stream=True)
     for group in groups[1:]:
         await message.reply_text("\n".join(group))
     audit(user_id, "/runners", True, status, note=f"count={len(runners)}")
@@ -650,7 +662,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     runner_id = int(args[0])
 
     placeholder, status, data = await gh_with_placeholder(
-        context, message.chat_id, f"🔍 Looking up runner {runner_id}…",
+        context, message, f"🔍 Looking up runner {runner_id}",
         "GET", f"{c.repo_path}/actions/runners/{runner_id}",
     )
     if status != 200 or not isinstance(data, dict):
