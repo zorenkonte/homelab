@@ -1,4 +1,0 @@
-- [runner-bot security constraints](runner-bot-security-constraints.md) — bot now at /root/src/homelab/runner-bot (homelab repo); never read /root/.secrets, no host installs, secrets only via Compose file secrets, SSH-signed commits with no-reply email
-- [Telegram Web K hides bot typing](telegram-web-k-hides-bot-typing.md) — web.telegram.org/k never shows bot typing; Web A, desktop, mobile do
-- [Status line preferences](statusline-preferences.md) — script at ~/.claude/statusline-command.sh, python3 not jq, 24h, 5h always with reset, weekly without
-- [homelab single stack](homelab-single-stack.md) — one Compose project 'homelab' from /root/src/homelab; Portainer is viewer only (CE)
