@@ -36,7 +36,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ChatType, ParseMode
-from telegram.error import TelegramError
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -58,7 +58,14 @@ TOKEN_RATE_LIMIT_SECONDS = 60
 REMOVE_CONFIRM_WINDOW_SECONDS = 120
 HEARTBEAT_FILE = Path("/tmp/heartbeat")
 HEARTBEAT_INTERVAL_SECONDS = 30
-PLACEHOLDER_MIN_SECONDS = 1.5  # keep the loading placeholder on screen at least this long
+PLACEHOLDER_MIN_SECONDS = 1.0  # keep the loading placeholder on screen at least this long
+# /runners streams in through Telegram's native message drafts (Bot API 9.5 sendMessageDraft):
+# the client animates each draft update, then the real message replaces the draft.
+# Telegram rate-limits sendMessageDraft (about 20 calls per burst) and the client animates the
+# text between consecutive drafts itself, so a few well-spaced drafts give a smooth stream.
+STREAM_DRAFTS = 4  # draft updates before the final message
+STREAM_INTERVAL_SECONDS = 0.2  # pause after each draft (on top of the ~0.2 s round trip)
+HTML_TOKEN_RE = re.compile(r"<(/?)([a-z]+)[^>]*>|&[#a-zA-Z0-9]+;|.", re.DOTALL)
 EMOJI_NOISE = str.maketrans("", "", "️‍♀♂")  # variation selector, ZWJ, gender signs
 TELEGRAM_CHUNK_CHARS = 3500
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -327,10 +334,21 @@ class Placeholder:
             log.debug("typing indicator failed: %s", exc.__class__.__name__)
         return placeholder
 
-    async def finish(self, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
+    async def _hold(self) -> None:
         remaining = PLACEHOLDER_MIN_SECONDS - (time.monotonic() - self.started)
         if remaining > 0:
             await asyncio.sleep(remaining)
+
+    async def discard(self) -> None:
+        """Removes the placeholder without sending anything (the caller streams the reply itself)."""
+        await self._hold()
+        try:
+            await self.message.delete()
+        except TelegramError as exc:
+            log.warning("could not delete placeholder: %s", exc.__class__.__name__)
+
+    async def finish(self, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
+        await self._hold()
         if self.is_sticker:
             try:
                 await self.message.delete()
@@ -519,26 +537,104 @@ async def cmd_runners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"   labels: {', '.join(labels) if labels else '-'}"
         )
 
-    chunks = chunk_lines(lines)
-    await placeholder.finish(context, chunks[0])
-    for chunk in chunks[1:]:
-        await message.reply_text(chunk)
+    groups = chunk_lines(lines)
+    await placeholder.discard()
+    await stream_message(context, message.chat_id, message.message_id, "\n".join(groups[0]))
+    for group in groups[1:]:
+        await message.reply_text("\n".join(group))
     audit(user_id, "/runners", True, status, note=f"count={len(runners)}")
 
 
-def chunk_lines(lines: list[str]) -> list[str]:
-    chunks: list[str] = []
-    current = ""
+def chunk_lines(lines: list[str]) -> list[list[str]]:
+    """Groups lines so that each group joined with newlines stays under the Telegram limit."""
+    groups: list[list[str]] = []
+    current: list[str] = []
+    size = 0
     for line in lines:
-        candidate = f"{current}\n{line}" if current else line
-        if len(candidate) > TELEGRAM_CHUNK_CHARS and current:
-            chunks.append(current)
-            current = line
-        else:
-            current = candidate
+        if current and size + 1 + len(line) > TELEGRAM_CHUNK_CHARS:
+            groups.append(current)
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + 1
     if current:
-        chunks.append(current)
-    return chunks
+        groups.append(current)
+    return groups
+
+
+def html_prefix(text: str, visible_chars: int) -> tuple[str, bool]:
+    """Returns the first `visible_chars` visible characters of an HTML-formatted Telegram text.
+
+    Tags do not count, entities count as one character and are never split, and any tags still
+    open at the cut are closed so Telegram accepts the fragment. The bool says whether the whole
+    text was consumed.
+    """
+    out: list[str] = []
+    open_tags: list[str] = []
+    seen = 0
+    for match in HTML_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if token.startswith("<"):
+            closing, name = match.group(1), match.group(2)
+            if closing:
+                if open_tags and open_tags[-1] == name:
+                    open_tags.pop()
+            else:
+                open_tags.append(name)
+            out.append(token)
+            continue
+        if seen >= visible_chars:
+            out.extend(f"</{name}>" for name in reversed(open_tags))
+            return "".join(out), False
+        out.append(token)
+        seen += 1
+    return "".join(out), True
+
+
+def stream_steps(text: str) -> list[str]:
+    """Splits an HTML text into STREAM_DRAFTS growing partial versions; the last is the full text."""
+    visible = sum(1 for m in HTML_TOKEN_RE.finditer(text) if not m.group(0).startswith("<"))
+    versions: list[str] = []
+    for k in range(1, STREAM_DRAFTS + 1):
+        shown = -(-visible * k // STREAM_DRAFTS)  # ceil(visible * k / N)
+        prefix, complete = html_prefix(text, shown)
+        if complete:
+            versions.append(text)
+            break
+        if not versions or prefix != versions[-1]:
+            versions.append(prefix)
+    if versions[-1] != text:
+        versions.append(text)
+    return versions
+
+
+async def stream_message(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, draft_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
+) -> Message:
+    """Streams `text` as a native Telegram draft, then sends the real message that replaces it.
+
+    Drafts with the same draft_id are animated by the client (Bot API 9.5), including the change
+    from the last draft to the final message. Drafts are ephemeral, so the final send_message is
+    what persists. The first draft error stops the drafts; the full message is always sent.
+    """
+    steps = stream_steps(text)
+    started = time.monotonic()
+    sent = 0
+    try:
+        for partial in steps:
+            await context.bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=partial)
+            sent += 1
+            await asyncio.sleep(STREAM_INTERVAL_SECONDS)
+    except RetryAfter as exc:
+        log.warning("draft streaming rate-limited after %d drafts (retry_after=%ss)", sent, exc.retry_after)
+        await asyncio.sleep(min(float(exc.retry_after), 3.0))
+    except TelegramError as exc:
+        log.warning("draft streaming stopped after %d drafts (%s)", sent, exc.__class__.__name__)
+    log.info("streamed %d/%d drafts in %.1fs", sent, len(steps), time.monotonic() - started)
+    try:
+        return await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    except RetryAfter as exc:
+        await asyncio.sleep(min(float(exc.retry_after), 5.0))
+        return await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
