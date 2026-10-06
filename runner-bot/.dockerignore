@@ -1,0 +1,19 @@
+# Only requirements.txt and bot.py are needed in the image.
+.git
+.gitignore
+.dockerignore
+*.md
+*.sh
+compose.yaml
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+*.env
+.secrets/
+secrets/
+*secret*
+*token*
+*.pem
+*.key

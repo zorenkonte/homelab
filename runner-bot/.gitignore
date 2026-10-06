@@ -1,0 +1,25 @@
+# Secrets and anything that looks like one. The real secrets live in /root/.secrets/runner-bot,
+# outside this folder, but keep the repo safe even if someone copies a file in here by mistake.
+.env
+.env.*
+*.env
+.secrets/
+secrets/
+*secret*
+*token*
+github_pat
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editors / OS
+*.swp
+*~
+.DS_Store
