@@ -35,7 +35,7 @@ from telegram import (
     Message,
     Update,
 )
-from telegram.constants import ChatType, ParseMode
+from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -308,15 +308,24 @@ class Placeholder:
     @classmethod
     async def send(cls, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str) -> "Placeholder":
         started = time.monotonic()
+        placeholder: Placeholder | None = None
         file_id = context.bot_data.get("loading_sticker_file_id")
         if file_id:
             try:
                 message = await context.bot.send_sticker(chat_id=chat_id, sticker=file_id)
-                return cls(message, True, started)
+                placeholder = cls(message, True, started)
             except TelegramError as exc:
                 log.warning("loading sticker failed, using text placeholder: %s", exc.__class__.__name__)
-        message = await context.bot.send_message(chat_id=chat_id, text=text)
-        return cls(message, False, started)
+        if placeholder is None:
+            message = await context.bot.send_message(chat_id=chat_id, text=text)
+            placeholder = cls(message, False, started)
+        # Sent AFTER the placeholder: Telegram clears a bot's typing status whenever the bot
+        # sends a message, so this keeps "typing…" in the header until the result arrives.
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except TelegramError as exc:
+            log.debug("typing indicator failed: %s", exc.__class__.__name__)
+        return placeholder
 
     async def finish(self, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> Message:
         remaining = PLACEHOLDER_MIN_SECONDS - (time.monotonic() - self.started)
