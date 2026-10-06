@@ -4,7 +4,7 @@
 # and appear inside the container at /run/secrets/<name>. Nothing secret is in `environment:`,
 # so `docker inspect` and Portainer show no credentials.
 #
-# Fill in the three REPLACE_ME placeholders, then: docker compose up -d --build
+# Fill in GITHUB_OWNER and GITHUB_REPO below and ALLOWED_USER_IDS in .env, then: docker compose up -d --build
 
 name: runner-bot
 
@@ -20,7 +20,9 @@ services:
     environment:
       GITHUB_OWNER: "zorenkonte"          # <-- GitHub user or org that owns the repo
       GITHUB_REPO: "monitoring"            # <-- repository name (no owner, no .git)
-      ALLOWED_USER_IDS: "5680807414"        # <-- Telegram numeric user IDs, comma-separated, e.g. "123456789,987654321"
+      # Telegram numeric user IDs, comma-separated. Set in the gitignored .env next to this file:
+      #   ALLOWED_USER_IDS=123456789,987654321
+      ALLOWED_USER_IDS: "${ALLOWED_USER_IDS:?set ALLOWED_USER_IDS in runner-bot/.env}"
       TOKEN_MESSAGE_TTL_SECONDS: "300"
       TZ: "Asia/Manila"
       # Optional loading sticker shown while GitHub is called. Either "<SetName>:<emoji>" or a

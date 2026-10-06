@@ -66,7 +66,8 @@ cat <<EOF
        chown ${BOT_UID}:${BOT_GID} ${SECRET_DIR}/github_pat ${SECRET_DIR}/telegram_bot_token
        chmod 400 ${SECRET_DIR}/github_pat ${SECRET_DIR}/telegram_bot_token
 
-  3. Fill the REPLACE_ME placeholders in compose.yaml (GITHUB_OWNER, GITHUB_REPO, ALLOWED_USER_IDS).
+  3. Fill GITHUB_OWNER and GITHUB_REPO in compose.yaml, and put your Telegram user id(s) in
+     /root/src/homelab/runner-bot/.env (gitignored):   echo "ALLOWED_USER_IDS=123456789" > .env
 
   4. Start the bot:   cd /root/src/homelab/runner-bot && docker compose up -d --build
      Follow logs:     docker compose logs -f

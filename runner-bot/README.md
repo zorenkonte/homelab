@@ -34,7 +34,8 @@ nano /root/.secrets/runner-bot/github_pat    # paste the PAT, one line
 nano /root/.secrets/runner-bot/telegram_bot_token
 chown 10001:10001 /root/.secrets/runner-bot/github_pat /root/.secrets/runner-bot/telegram_bot_token
 chmod 400       /root/.secrets/runner-bot/github_pat /root/.secrets/runner-bot/telegram_bot_token
-nano compose.yaml                            # fill GITHUB_OWNER, GITHUB_REPO, ALLOWED_USER_IDS
+nano compose.yaml                            # fill GITHUB_OWNER, GITHUB_REPO
+echo "ALLOWED_USER_IDS=<your id>" > .env          # your Telegram user id(s), comma-separated; .env is gitignored
 docker compose up -d --build
 docker compose logs -f
 ```
